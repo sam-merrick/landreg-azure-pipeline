@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.env
+.databricks/
+data/
+*.csv
+*.parquet
+.venv/
