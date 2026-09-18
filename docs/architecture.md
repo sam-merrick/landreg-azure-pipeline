@@ -57,6 +57,10 @@ order and set (swaps PAON and SAON, substitutes a linked-data URI for a
 record_status), so it is not a valid reference for the bulk files. Schema 
 is verified against the files rather than taken from the documentation.
 
+The complete file also has 16 columns and aligns with the monthly file, in the
+complete file the record_status is uniformly "A" because a snapshot has no change
+semantics to express.
+
 ### Null handling
 
 Empty fields arrive in the source as quoted empty strings, which DuckDB's 
@@ -103,3 +107,17 @@ standard upsert semantic and maps directly onto Delta Lake's MERGE.
 **Consequences:** a high rate of changes arriving for unknown identifiers
 would indicate an incomplete backfill, so this is worth monitoring rather
 than silently absorbing.
+
+### Record status in silver
+
+Record status describes how a row was delivered rather than a property of
+the transaction itself. In the complete file it is uniformly "A", since a
+snapshot has no change semantics to express.
+
+**Decision:** record status is consumed during the silver load — it drives
+whether a row is inserted, updated or flagged deleted — but is not retained
+as a silver column. Its effect persists as `is_deleted`.
+
+**Also considered:** deriving a last-operation or correction-count field to
+track how often a transaction has been amended. Decided against it as the gold
+model does not require change history.
