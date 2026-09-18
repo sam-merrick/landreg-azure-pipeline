@@ -23,7 +23,7 @@ import duckdb
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 PP_MONTHLY_PATH = DATA_DIR / "pp-monthly-2026-07.csv"
-PP_COMPLETE_PATH = DATA_DIR / "pp-monthly-2026-07.csv"
+PP_COMPLETE_PATH = DATA_DIR / "pp-complete.csv"
 COLUMNS = {
     "transaction_id": "VARCHAR",
     "price": "VARCHAR",
@@ -53,9 +53,9 @@ def register_source(con: duckdb.DuckDBPyConnection, path: Path, view_name: str) 
     con.read_csv(str(path), header=False, columns=COLUMNS).create_view(view_name)
 
 
-def preview_rows(con: duckdb.DuckDBPyConnection, view_name: str, limit: int = 10) -> None:
+def preview_rows(con: duckdb.DuckDBPyConnection, view_name: str, limit: int = 5) -> None:
     """Print the first rows of the given view."""
-    query = f"SELECT paon, saon, street, locality FROM {view_name} LIMIT ?"
+    query = f"SELECT * FROM {view_name} LIMIT ?"
     con.sql(query, params=[limit]).show()
 
 
@@ -90,6 +90,9 @@ def main() -> None:
     preview_rows(con, "monthly")
     profile_nullability(con, "monthly")
     profile_record_status(con, "monthly")
+    register_source(con, PP_COMPLETE_PATH, "complete")
+    preview_rows(con, "complete")
+    profile_record_status(con, "complete")
 
 
 if __name__ == "__main__":
