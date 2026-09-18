@@ -68,13 +68,28 @@ def profile_nullability(con: duckdb.DuckDBPyConnection, view_name: str) -> None:
     FROM {view_name}
     """
     con.sql(query).show()
-    
+
+
+def profile_record_status(con: duckdb.DuckDBPyConnection, view_name: str) -> None:
+    """Report distinct values in record_status, displaying counts and percentages"""
+    query = f"""
+    SELECT
+        record_status,
+        COUNT(*) AS count,
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM {view_name}) , 2) AS pct
+    FROM {view_name}
+    GROUP BY record_status
+    ORDER BY count DESC
+    """
+    con.sql(query).show()
+
 
 def main() -> None:
     con = get_connection()
     register_source(con, PP_MONTHLY_PATH, "monthly")
     preview_rows(con, "monthly")
     profile_nullability(con, "monthly")
+    profile_record_status(con, "monthly")
 
 
 if __name__ == "__main__":
