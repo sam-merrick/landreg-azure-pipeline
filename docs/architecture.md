@@ -57,7 +57,7 @@ order and set (swaps PAON and SAON, substitutes a linked-data URI for a
 record_status), so it is not a valid reference for the bulk files. Schema 
 is verified against the files rather than taken from the documentation.
 
-The complete file also has 16 columns and aligns with the monthly file, in the
+The complete file also has 16 columns and aligns with the monthly file. In the
 complete file the record_status is uniformly "A" because a snapshot has no change
 semantics to express.
 
@@ -67,7 +67,34 @@ Empty fields arrive in the source as quoted empty strings, which DuckDB's
 reader normalises to NULL. This is reader behaviour rather than a property 
 of the file, so it must be re-verified when ingesting with Spark.
 
+### Transaction identifier
+
+`transaction_id` is unique and never null in both files. C (change) records carry
+existing IDs which indicates the ID is stable across corrections. Strong evidence
+from one file; this is to be confirmed against the next monthly release.
+
+### Snapshot timing
+
+The complete file reflects the state after the latest monthly file has been applied.
+Additions and changes from July are present; July's deletions are absent rather than
+flagged. Established by an ID overlap check: additions and changes matched, deletions
+did not.
+
 ## Design decisions
+
+### Source reader
+
+**Decision:** a single reader handles both the complete file and the
+monthly change files.
+
+**Reasoning:** both carry the same 16 columns in the same order, so no
+schema reconciliation is needed between the backfill and incremental
+paths. Record status is present in both, uniformly "A" in the complete
+file.
+
+**Consequences:** a future change to either file's layout would break
+both paths. Column count and order should be asserted at read time rather
+than assumed.
 
 ### Handling deleted records
 
@@ -92,17 +119,28 @@ purged later if required, but deleted rows cannot be recovered.
 **Consequences:** gold layer views must filter on `is_deleted` so deleted
 transactions do not appear in reporting. Silver row counts will exceed the
 count of live transactions. A purge process may be needed if retention
-policy later requires it.
+policy later requires it. The deletion audit trail begins at the backfill date, and 
+transactions deleted before it are absent with no record.
 
-### Handling changed records
+### Merge behaviour
 
-**Decision:** merge on transaction identifier — update where the row
-exists, insert where it does not.
+**Decision:** merge on `transaction_id` — with behaviour dependent on
+record status.
 
-**Reasoning:** a change record for an identifier not present in silver
-should not fail or be discarded. Treating it as an insert makes the load
-idempotent and tolerant of gaps in the change file sequence. This is the
-standard upsert semantic and maps directly onto Delta Lake's MERGE.
+| Status | Matched | Not matched |
+|---|---|---|
+| A | update | insert |
+| C | update | insert |
+| D | set `is_deleted` | ignore and log count |
+
+**Reasoning:** inserting on no-match makes additions and changes
+idempotent and tolerant of gaps in the change file sequence. Deletions
+are the exception: a deletion for an unknown identifier must never be
+inserted, since that would create a row the source says should not
+exist. These are logged rather than silently discarded, because they
+indicate either a re-applied file or a load sequence that is out of sync.
+Additions are treated as updates when matched so that re-applying a file
+already reflected in the target is a no-op rather than an error.
 
 **Consequences:** a high rate of changes arriving for unknown identifiers
 would indicate an incomplete backfill, so this is worth monitoring rather
@@ -111,8 +149,7 @@ than silently absorbing.
 ### Record status in silver
 
 Record status describes how a row was delivered rather than a property of
-the transaction itself. In the complete file it is uniformly "A", since a
-snapshot has no change semantics to express.
+the transaction itself. As noted above, it is uniformly "A" in the complete file.
 
 **Decision:** record status is consumed during the silver load — it drives
 whether a row is inserted, updated or flagged deleted — but is not retained
@@ -121,3 +158,10 @@ as a silver column. Its effect persists as `is_deleted`.
 **Also considered:** deriving a last-operation or correction-count field to
 track how often a transaction has been amended. Decided against it as the gold
 model does not require change history.
+
+### Backfill and incremental start
+
+The complete file is the backfill, representing state as of the latest monthly 
+release. The first new incremental load is the following month. Re-applying the 
+already-included monthly file is expected to be a no-op, and serves as the first 
+idempotency test.
