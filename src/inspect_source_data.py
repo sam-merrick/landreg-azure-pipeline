@@ -114,10 +114,38 @@ def profile_id_overlap(con: duckdb.DuckDBPyConnection, change_view: str, snapsho
     con.sql(query).show()
 
 
+def nullability_checks(con: duckdb.DuckDBPyConnection, view_name: str, columns: dict) -> None:
+    """Report how many rows are NULL for each column."""
+
+    null_counts = ",\n".join(
+        f"COUNT(*) FILTER (WHERE {column} IS NULL) AS {column}"
+        for column in columns
+    )
+    query = f"""
+    WITH counts AS (
+        SELECT
+            COUNT(*) AS _total_rows,
+            {null_counts}
+        FROM {view_name}
+    )
+    SELECT
+        "column",
+        null_cnt,
+        printf('%.2f%%', 100.0 * null_cnt / NULLIF(_total_rows, 0)) AS null_pct
+    FROM (
+        UNPIVOT counts
+        ON COLUMNS(* EXCLUDE (_total_rows))
+        INTO NAME "column" VALUE null_cnt
+    )
+    """
+    con.sql(query).show()
+
+
 def main() -> None:
     con = get_connection()
     register_source(con, PP_MONTHLY_PATH, "monthly")
     register_source(con, PP_COMPLETE_PATH, "complete")
+    '''
     preview_rows(con, "monthly")
     profile_nullability(con, "monthly")
     profile_record_status(con, "monthly")
@@ -127,6 +155,8 @@ def main() -> None:
     profile_transaction_id(con, "monthly")
     profile_transaction_id(con, "complete")
     profile_id_overlap(con, "monthly", "complete")
+    '''
+    nullability_checks(con, "monthly", COLUMNS)
 
 
 if __name__ == "__main__":
