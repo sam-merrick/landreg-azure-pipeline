@@ -84,15 +84,49 @@ def profile_record_status(con: duckdb.DuckDBPyConnection, view_name: str) -> Non
     con.sql(query).show()
 
 
+def profile_transaction_id(con: duckdb.DuckDBPyConnection, view_name: str) -> None:
+    """Report whether the transaction_id is unique within the file."""
+    query = f"""
+    SELECT
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT transaction_id) AS distinct_transaction_ids
+    FROM {view_name}
+    """
+    print(view_name)
+    con.sql(query).show()
+
+
+def profile_id_overlap(con: duckdb.DuckDBPyConnection, change_view: str, snapshot_view: str) -> None:
+    """Report, per record status, how many change-file IDs exist in the snapshot."""
+    query = f"""
+    SELECT
+        c.record_status,
+        COUNT(*) AS change_rows,
+        COUNT(s.transaction_id) AS found_in_snapshot,
+        COUNT(*) - COUNT(s.transaction_id) AS not_in_snapshot
+    FROM {change_view} AS c
+    LEFT JOIN {snapshot_view} AS s 
+        ON s.transaction_id = c.transaction_id
+    GROUP BY c.record_status
+    ORDER BY c.record_status
+    """
+    print(f"ID overlap: {change_view} against {snapshot_view}")
+    con.sql(query).show()
+
+
 def main() -> None:
     con = get_connection()
     register_source(con, PP_MONTHLY_PATH, "monthly")
+    register_source(con, PP_COMPLETE_PATH, "complete")
     preview_rows(con, "monthly")
     profile_nullability(con, "monthly")
     profile_record_status(con, "monthly")
     register_source(con, PP_COMPLETE_PATH, "complete")
     preview_rows(con, "complete")
     profile_record_status(con, "complete")
+    profile_transaction_id(con, "monthly")
+    profile_transaction_id(con, "complete")
+    profile_id_overlap(con, "monthly", "complete")
 
 
 if __name__ == "__main__":
