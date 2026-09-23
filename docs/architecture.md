@@ -80,6 +80,59 @@ Additions and changes from July are present; July's deletions are absent rather 
 flagged. Established by an ID overlap check: additions and changes matched, deletions
 did not.
 
+### Nullability
+
+Columns fall into three groups:
+
+**Never null** — `transaction_id`, `price`, `date_of_transfer`,
+`property_type`, `old_or_new`, `duration`, `town_city`, `district`,
+`county`, `category_type`, `record_status`. Consistent across both files.
+
+**Structurally optional** — `saon` (88% null) and `locality` (38% null).
+Null here means "not applicable" rather than "missing": SAON only applies
+to sub-divided properties such as flats.
+
+**Occasionally missing** — `postcode` (0.16%), `street` (1.6%),
+`paon` (0.01%). Genuine gaps in otherwise expected data.
+
+The distinction matters: the second group should never be treated as a
+quality failure, while the third represents real absence.
+
+### Categorical values
+
+`property_type` (T, S, D, F, O), `old_or_new` (Y, N) and `category_type`
+(A, B) match the published guidance.
+
+`duration` contains a third value, `U`, on 532 rows. This is not
+documented in the GOV.UK guidance, which lists only F (freehold) and
+L (leasehold). At 0.0017% of rows it is numerically negligible, but its
+existence confirms that categorical values must be validated against a
+known set rather than trusted.
+
+### Volume and distribution
+
+31,525,946 rows in the complete file, spanning 1995 to the present.
+Annual volume is broadly stable at roughly 0.8–1.3 million rows per year.
+The current year is partial, reflecting both the incomplete year and the
+two-week to two-month lag between sale completion and registration.
+
+### Data quality
+
+`price` casts cleanly to integer across all rows — no non-numeric values
+are present. `date_of_transfer` contains no dates before 1995 or in the
+future, and arrives as a timestamp with a zero time component.
+
+Price outliers: 709 rows at £100 or below, 371 rows at £100 million or
+above. Both are plausible real transactions rather than errors — nominal
+transfers between related parties at the low end, large commercial or
+portfolio transactions at the high end.
+
+Postcodes are well-formed: one row in 31.5 million fails a UK postcode
+pattern, carrying the literal string `UNKNOWN`. A check confirmed this
+sentinel does not appear in `town_city`, `district` or `county`. The check
+targeted this specific sentinel in uppercase; a broader scan for other
+placeholder conventions was not performed.
+
 ## Design decisions
 
 ### Source reader
@@ -165,3 +218,72 @@ The complete file is the backfill, representing state as of the latest monthly
 release. The first new incremental load is the following month. Re-applying the 
 already-included monthly file is expected to be a no-op, and serves as the first 
 idempotency test.
+
+### Not-null constraints
+
+**Decision:** enforce not-null on the eleven columns observed to be
+complete in both files. `saon`, `locality`, `postcode`, `street` and
+`paon` remain nullable.
+
+**Reasoning:** these constraints encode an observed property of the source
+rather than an assumption. A null arriving in one of them indicates the
+source has changed shape, which should surface as a quality failure rather
+than pass through silently.
+
+**Consequences:** a genuine source change would quarantine rows rather
+than corrupt downstream data. The constraint set should be revisited if
+the source schema changes.
+
+### Sentinel value handling
+
+**Decision:** normalise the literal string `UNKNOWN` in `postcode` to NULL
+during the silver load. Do not quarantine the row.
+
+**Reasoning:** the transaction itself is valid; only the postcode is
+unknown. Leaving the sentinel in place would mean "missing" is represented
+two ways — NULL and a magic string — and any cleaning that handles only
+NULL would let it through into gold as though it were a real postcode.
+
+**Consequences:** scoped to `postcode`, as the sentinel was not found
+elsewhere. Should be revisited if other placeholder conventions appear.
+
+### Outlier handling
+
+**Decision:** flag price outliers rather than quarantine them.
+
+**Reasoning:** a transaction with an unusual price is still a valid
+transaction. Removing nominal transfers and very large commercial sales
+would silently distort any average-price analysis in gold. Flagging leaves
+the exclusion decision to the consumer.
+
+**Consequences:** gold consumers must choose whether to filter on the flag.
+Aggregations that do not exclude outliers will include genuine but atypical
+transactions.
+
+### Categorical validation
+
+**Decision:** validate `property_type`, `old_or_new`, `duration` and
+`category_type` against a known set of codes. Rows with unrecognised values
+are flagged, not rejected.
+
+**Reasoning:** `duration` already contains an undocumented value, so the
+published code lists are demonstrably incomplete. Rejecting unknown codes
+would discard valid transactions; flagging surfaces them for review while
+letting the load proceed.
+
+**Consequences:** the known-code sets need updating as new values appear.
+A rising flag rate indicates the source has introduced codes not yet
+accounted for.
+
+### Partitioning
+
+**Decision:** partition silver and gold by year of `date_of_transfer`.
+
+**Reasoning:** annual volume is stable at roughly one million rows per
+year, so year-based partitions are evenly sized and avoid the stragglers
+that skewed partitions cause in Spark. Year is also the most common filter
+predicate for property price analysis, so partition pruning will be
+effective.
+
+**Consequences:** roughly 32 partitions, growing by one per year. The
+current year's partition is smaller than the rest until the year completes.
