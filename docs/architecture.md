@@ -330,3 +330,19 @@ privilege.
 
 **Consequences:** ingestion would need revisiting if file volume grew by
 orders of magnitude.
+
+### Catalog and environment separation
+
+**Decision:** one catalog per environment (`landreg_dev`, `landreg_prod`),
+with medallion layers as schemas beneath. Each schema has its own managed
+storage location under a `dev/` or `prod/` path within the matching
+container.
+
+**Reasoning:** promoting code between environments changes only the catalog
+name, leaving every table reference unchanged. Path-level separation keeps
+dev and prod writes physically apart within the same storage account.
+
+**Consequences:** separate storage accounts per environment would give
+stronger isolation — independent firewall rules, access policies and cost
+attribution — and would be the production choice. Path separation is
+sufficient here given a single developer and one subscription.
