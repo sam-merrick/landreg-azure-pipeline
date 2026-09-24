@@ -287,3 +287,46 @@ effective.
 
 **Consequences:** roughly 32 partitions, growing by one per year. The
 current year's partition is smaller than the rest until the year completes.
+
+### Storage access
+
+**Decision:** Databricks authenticates to ADLS via an Access Connector
+managed identity, granted Storage Blob Data Contributor on the storage
+account. No account keys or SAS tokens are used.
+
+**Reasoning:** managed identity means no secret exists to be rotated,
+leaked, or committed. The alternative — a storage account key in a
+notebook or secret scope — creates a credential that must be managed and
+that grants full access to the account if exposed.
+
+**Consequences:** access is granted at storage account scope rather than
+per container, so the connector can read and write every layer. Narrower
+per-container role assignments would be appropriate in production.
+
+### External locations
+
+**Decision:** a separate Unity Catalog external location per container
+rather than one at the storage account root.
+
+**Reasoning:** external locations are the unit of permission granting in
+Unity Catalog. Per-container locations allow different grants per layer —
+for example read-only on `landing`, or restricting `gold` to a reporting
+group — without restructuring later. A single root location would make
+every layer share one permission boundary.
+
+**Consequences:** five objects to maintain rather than one. New containers
+need a corresponding external location before they can be used.
+
+### Auto Loader file discovery
+
+**Decision:** directory listing rather than file events.
+
+**Reasoning:** file notification requires granting the access connector
+Storage Account Contributor and Event Grid permissions, which are
+considerably broader than the Storage Blob Data Contributor needed to read
+and write data. At one file per month in a partitioned path, listing cost
+is negligible and the optimisation does not justify the additional
+privilege.
+
+**Consequences:** ingestion would need revisiting if file volume grew by
+orders of magnitude.
