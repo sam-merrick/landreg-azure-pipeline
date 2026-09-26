@@ -15,7 +15,7 @@ from landreg.schema import SOURCE_SCHEMA
 def add_ingestion_metadata(df: DataFrame, run_id: str) -> DataFrame:
     """Add provenance columns to a source DataFrame."""
     return df.withColumns({
-        "source_filename": F.input_file_name(),
+        "source_filename": F.col("_metadata.file_path"),
         "ingestion_timestamp": F.current_timestamp(),
         "run_id": F.lit(run_id)
     })
