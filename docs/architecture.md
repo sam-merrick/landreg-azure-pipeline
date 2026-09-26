@@ -63,9 +63,10 @@ semantics to express.
 
 ### Null handling
 
-Empty fields arrive in the source as quoted empty strings, which DuckDB's 
-reader normalises to NULL. This is reader behaviour rather than a property 
-of the file, so it must be re-verified when ingesting with Spark.
+Empty fields arrive in the source as quoted empty strings. Both DuckDB and
+Spark normalise these to NULL on read. This is reader behaviour rather than
+a property of the file, so bronze stores NULL and no empty-string handling
+is needed downstream.
 
 ### Transaction identifier
 
