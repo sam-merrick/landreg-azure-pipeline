@@ -346,3 +346,23 @@ dev and prod writes physically apart within the same storage account.
 stronger isolation — independent firewall rules, access policies and cost
 attribution — and would be the production choice. Path separation is
 sufficient here given a single developer and one subscription.
+
+### Bronze layer design
+
+1. Two bronze tables — bronze.price_paid_complete and bronze.price_paid_monthly. 
+   Different ingestion mechanics (one-off batch read versus a streaming directory 
+   watch), different lifecycles, and the table name carries provenance without 
+   needing a flag.
+
+2. Three ingestion metadata columns — source filename, ingestion timestamp, and 
+   a run ID generated once per execution and stamped on every row that run writes. 
+   The run ID is what makes "undo run X" possible and links bronze rows to the run log.
+
+3. No partitioning — bronze is append-only, monthly writes are ~100k rows, and you 
+   don't query it by transfer date. Partitioning would create tiny files per partition 
+   for no benefit.
+
+4. Append — bronze never overwrites. Duplicates are tolerable because silver merges on 
+   transaction ID, which makes re-runs safe. Bronze tolerates duplicates which means
+   silver must deduplicate before merging since Delta errors when a MERGE matches the
+   same target row twice. 
