@@ -358,6 +358,8 @@ sufficient here given a single developer and one subscription.
 2. Three ingestion metadata columns — source filename, ingestion timestamp, and 
    a run ID generated once per execution and stamped on every row that run writes. 
    The run ID is what makes "undo run X" possible and links bronze rows to the run log.
+   `ingestion_timestamp` is UTC, matching the cluster session timezone. This avoids DST 
+   ambiguity when comparing or ordering loads.
 
 3. No partitioning — bronze is append-only, monthly writes are ~100k rows, and you 
    don't query it by transfer date. Partitioning would create tiny files per partition 
