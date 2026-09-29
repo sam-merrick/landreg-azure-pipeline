@@ -9,8 +9,10 @@ typing happen in silver.
 from pyspark.sql import functions as F
 from pyspark.sql import SparkSession, DataFrame
 
-from landreg.config import COMPLETE_PATH, BRONZE_SCHEMA, MONTHLY_PATH, CHECKPOINT_ROOT, table
+from landreg.config import BRONZE_SCHEMA, CHECKPOINT_ROOT, LANDING_CONTAINER, table, abfss
 from landreg.schema import SOURCE_SCHEMA
+from landreg.control import get_source_config
+
 
 def add_ingestion_metadata(df: DataFrame, run_id: str) -> DataFrame:
     """Add provenance columns to a source DataFrame."""
@@ -21,30 +23,38 @@ def add_ingestion_metadata(df: DataFrame, run_id: str) -> DataFrame:
     })
 
 
-def load_complete_file(spark: SparkSession, run_id: str) -> None:
-    """Read the complete file from landing and append to bronze."""
-    print(f"[{run_id}] Loading {COMPLETE_PATH}")
-    df = spark.read.csv(COMPLETE_PATH, header=False, schema=SOURCE_SCHEMA)
+def load_batch_source(spark: SparkSession, source_name: str, run_id: str) -> None:
+    """Read a batch source from landing and append it to bronze."""
+    config = get_source_config(spark, source_name)
+    source_path = abfss(LANDING_CONTAINER, config["source_path"])
+    target = table(BRONZE_SCHEMA, config["target_table"])
+
+    print(f"[{run_id}] Loading {source_path} into {target}")
+    df = spark.read.csv(source_path, header=False, schema=SOURCE_SCHEMA)
     df = add_ingestion_metadata(df, run_id)
-    df.write.mode("append").saveAsTable(table(BRONZE_SCHEMA, "price_paid_complete"))
+    df.write.mode("append").saveAsTable(target)
 
 
-def load_monthly_files(spark: SparkSession, run_id: str) -> None:
-    """Read the monthly file from landing and append to bronze."""
-    print(f"[{run_id}] Loading {MONTHLY_PATH}")
+def load_stream_source(spark: SparkSession, source_name: str, run_id: str) -> None:
+    """Read a stream source from landing and append it to bronze."""
+    config = get_source_config(spark, source_name)
+    source_path = abfss(LANDING_CONTAINER, config["source_path"])
+    target = table(BRONZE_SCHEMA, config["target_table"])
+
+    print(f"[{run_id}] Loading {source_path} into {target}")
     df = (
         spark.readStream
         .format("cloudFiles")
         .option("cloudFiles.format", "csv")
         .option("header", "false")
         .schema(SOURCE_SCHEMA)
-        .load(MONTHLY_PATH)
+        .load(source_path)
     )
     df = add_ingestion_metadata(df, run_id)
     (
         df.writeStream
-        .option("checkpointLocation", f"{CHECKPOINT_ROOT}price_paid_monthly")
+        .option("checkpointLocation", f"{CHECKPOINT_ROOT}{source_name}")
         .trigger(availableNow=True)
-        .toTable(table(BRONZE_SCHEMA, "price_paid_monthly"))
+        .toTable(target)
         .awaitTermination()
     )
