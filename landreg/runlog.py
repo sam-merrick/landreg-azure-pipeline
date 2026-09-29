@@ -6,7 +6,7 @@ recording timings, row counts and failure detail.
 
 from pyspark.sql import SparkSession
 
-from config import OPS_SCHEMA, table
+from landreg.config import OPS_SCHEMA, table
 
 def start_run(spark: SparkSession, run_id: str, source_name: str) -> None:
     """Record the start of a pipeline run."""
