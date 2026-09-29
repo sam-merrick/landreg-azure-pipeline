@@ -63,9 +63,10 @@ semantics to express.
 
 ### Null handling
 
-Empty fields arrive in the source as quoted empty strings, which DuckDB's 
-reader normalises to NULL. This is reader behaviour rather than a property 
-of the file, so it must be re-verified when ingesting with Spark.
+Empty fields arrive in the source as quoted empty strings. Both DuckDB and
+Spark normalise these to NULL on read. This is reader behaviour rather than
+a property of the file, so bronze stores NULL and no empty-string handling
+is needed downstream.
 
 ### Transaction identifier
 
@@ -287,3 +288,150 @@ effective.
 
 **Consequences:** roughly 32 partitions, growing by one per year. The
 current year's partition is smaller than the rest until the year completes.
+
+### Storage access
+
+**Decision:** Databricks authenticates to ADLS via an Access Connector
+managed identity, granted Storage Blob Data Contributor on the storage
+account. No account keys or SAS tokens are used.
+
+**Reasoning:** managed identity means no secret exists to be rotated,
+leaked, or committed. The alternative — a storage account key in a
+notebook or secret scope — creates a credential that must be managed and
+that grants full access to the account if exposed.
+
+**Consequences:** access is granted at storage account scope rather than
+per container, so the connector can read and write every layer. Narrower
+per-container role assignments would be appropriate in production.
+
+### External locations
+
+**Decision:** a separate Unity Catalog external location per container
+rather than one at the storage account root.
+
+**Reasoning:** external locations are the unit of permission granting in
+Unity Catalog. Per-container locations allow different grants per layer —
+for example read-only on `landing`, or restricting `gold` to a reporting
+group — without restructuring later. A single root location would make
+every layer share one permission boundary.
+
+**Consequences:** five objects to maintain rather than one. New containers
+need a corresponding external location before they can be used.
+
+### Auto Loader file discovery
+
+**Decision:** directory listing rather than file events.
+
+**Reasoning:** file notification requires granting the access connector
+Storage Account Contributor and Event Grid permissions, which are
+considerably broader than the Storage Blob Data Contributor needed to read
+and write data. At one file per month in a partitioned path, listing cost
+is negligible and the optimisation does not justify the additional
+privilege.
+
+**Consequences:** ingestion would need revisiting if file volume grew by
+orders of magnitude.
+
+### Catalog and environment separation
+
+**Decision:** one catalog per environment (`landreg_dev`, `landreg_prod`),
+with medallion layers as schemas beneath. Each schema has its own managed
+storage location under a `dev/` or `prod/` path within the matching
+container.
+
+**Reasoning:** promoting code between environments changes only the catalog
+name, leaving every table reference unchanged. Path-level separation keeps
+dev and prod writes physically apart within the same storage account.
+
+**Consequences:** separate storage accounts per environment would give
+stronger isolation — independent firewall rules, access policies and cost
+attribution — and would be the production choice. Path separation is
+sufficient here given a single developer and one subscription.
+
+### Bronze layer design
+
+1. Two bronze tables — bronze.price_paid_complete and bronze.price_paid_monthly. 
+   Different ingestion mechanics (one-off batch read versus a streaming directory 
+   watch), different lifecycles, and the table name carries provenance without 
+   needing a flag.
+
+2. Three ingestion metadata columns — source filename, ingestion timestamp, and 
+   a run ID generated once per execution and stamped on every row that run writes. 
+   The run ID is what makes "undo run X" possible and links bronze rows to the run log.
+   `ingestion_timestamp` is UTC, matching the cluster session timezone. This avoids DST 
+   ambiguity when comparing or ordering loads.
+
+3. No partitioning — bronze is append-only, monthly writes are ~100k rows, and it is 
+   not queried by transfer date. Partitioning would create tiny files per partition 
+   for no benefit.
+
+4. Append — bronze never overwrites. Duplicates are tolerable because silver merges on 
+   transaction ID, which makes re-runs safe. This does mean silver must deduplicate 
+   before merging, since Delta errors when a MERGE matches the same target row twice.
+
+5. The batch loader is not idempotent — re-running it appends the source
+   again. This is acceptable because the backfill runs once, and silver
+   merges on transaction ID so duplicates resolve. The stream loader is
+   idempotent via its Auto Loader checkpoint.
+
+### Metadata-driven ingestion
+
+**Decision:** source configuration lives in a control table
+(`ops.control`) rather than in code. Loaders take a source name, look up
+the row, and derive their source path and target table from it.
+
+**Reasoning:** adding a source becomes an INSERT rather than a new
+function and notebook. The two loaders are generic — one handles any
+batch source, the other any streaming source — so the code does not grow
+with the number of sources.
+
+Paths and table names are stored relative (`price-paid/complete/`,
+`price_paid_complete`) rather than fully qualified. The storage account
+and catalog are environment-specific and come from configuration, so the
+same control table rows are valid in both dev and prod.
+
+**Consequences:** a misconfigured row fails at lookup rather than at load,
+which is the intended behaviour — `get_source_config` raises if the source
+is absent or disabled rather than silently doing nothing. The control
+table is currently seeded manually via a setup notebook.
+
+### Run logging
+
+**Decision:** every pipeline execution writes a row to `ops.run_log` at
+start and updates it on completion, recording run ID, source, start and
+end timestamps, rows written, status and error detail.
+
+**Reasoning:** the run ID stamped on bronze rows joins back to this table,
+so any row can be traced to the execution that wrote it. Logging the start
+separately from the completion means an execution that dies outright —
+cluster failure, killed job — leaves a row stuck at `running`, which is
+distinguishable from one that failed and recorded why.
+
+Loaders wrap their work in try/except: a failure updates the log to
+`failed` with the exception message, then re-raises so the job itself
+fails rather than appearing to succeed.
+
+**Consequences:** the log is updated in place, so Delta rewrites files on
+each completion. Acceptable at this frequency; a higher-volume pipeline
+would use append-only state transitions instead.
+
+Row counts are taken from Delta's `operationMetrics` for the batch loader
+and from the streaming query's progress records for the stream loader,
+rather than counting the DataFrame. Counting would trigger a second full
+read of the source. The metrics approach assumes no concurrent writer to
+the target table, which holds for a single-writer pipeline.
+
+### Ingestion metadata as two functions
+
+**Decision:** provenance columns are added by two functions —
+`add_ingestion_metadata` for run ID and timestamp, `add_source_filename`
+for the file path.
+
+**Reasoning:** `_metadata.file_path` only resolves on file-based
+DataFrames, so a function using it cannot be unit tested against a
+DataFrame built in memory. Splitting it out leaves `add_ingestion_metadata`
+genuinely pure and testable, and isolates the file dependency in a single
+line documented as requiring a file-based source.
+
+**Consequences:** loaders call both. The filename function is verified by
+running the pipeline rather than by unit test.
