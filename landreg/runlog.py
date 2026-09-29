@@ -14,7 +14,7 @@ def start_run(spark: SparkSession, run_id: str, source_name: str) -> None:
         f"""
         INSERT INTO {table(OPS_SCHEMA, 'run_log')} 
             (run_id, source_name, started_at, status, ended_at, rows_written, error_message)
-        VALUES (?, ?, current_timestamp(), 'running', NULL, NULL, NULL),
+        VALUES (?, ?, current_timestamp(), 'running', NULL, NULL, NULL)
         """,
         args=[run_id, source_name],
     )
