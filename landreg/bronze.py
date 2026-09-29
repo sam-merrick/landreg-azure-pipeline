@@ -16,12 +16,16 @@ from landreg.runlog import start_run, complete_run
 
 
 def add_ingestion_metadata(df: DataFrame, run_id: str) -> DataFrame:
-    """Add provenance columns to a source DataFrame."""
+    """Add run and timestamp provenance to a DataFrame."""
     return df.withColumns({
-        "source_filename": F.col("_metadata.file_path"),
         "ingestion_timestamp": F.current_timestamp(),
-        "run_id": F.lit(run_id)
+        "run_id": F.lit(run_id),
     })
+
+
+def add_source_filename(df: DataFrame) -> DataFrame:
+    """Add the source file path. Requires a file-based DataFrame."""
+    return df.withColumn("source_filename", F.col("_metadata.file_path"))
 
 
 def load_batch_source(spark: SparkSession, source_name: str, run_id: str) -> None:
@@ -35,6 +39,7 @@ def load_batch_source(spark: SparkSession, source_name: str, run_id: str) -> Non
 
     try:
         df = spark.read.csv(source_path, header=False, schema=SOURCE_SCHEMA)
+        df = add_source_filename(df)
         df = add_ingestion_metadata(df, run_id)
         df.write.mode("append").saveAsTable(target)
 
@@ -66,6 +71,7 @@ def load_stream_source(spark: SparkSession, source_name: str, run_id: str) -> No
             .schema(SOURCE_SCHEMA)
             .load(source_path)
         )
+        df = add_source_filename(df)
         df = add_ingestion_metadata(df, run_id)
         query = (
             df.writeStream
