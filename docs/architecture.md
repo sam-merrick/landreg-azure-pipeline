@@ -361,11 +361,77 @@ sufficient here given a single developer and one subscription.
    `ingestion_timestamp` is UTC, matching the cluster session timezone. This avoids DST 
    ambiguity when comparing or ordering loads.
 
-3. No partitioning — bronze is append-only, monthly writes are ~100k rows, and you 
-   don't query it by transfer date. Partitioning would create tiny files per partition 
+3. No partitioning — bronze is append-only, monthly writes are ~100k rows, and it is 
+   not queried by transfer date. Partitioning would create tiny files per partition 
    for no benefit.
 
 4. Append — bronze never overwrites. Duplicates are tolerable because silver merges on 
-   transaction ID, which makes re-runs safe. Bronze tolerates duplicates which means
-   silver must deduplicate before merging since Delta errors when a MERGE matches the
-   same target row twice. 
+   transaction ID, which makes re-runs safe. This does mean silver must deduplicate 
+   before merging, since Delta errors when a MERGE matches the same target row twice.
+
+5. The batch loader is not idempotent — re-running it appends the source
+   again. This is acceptable because the backfill runs once, and silver
+   merges on transaction ID so duplicates resolve. The stream loader is
+   idempotent via its Auto Loader checkpoint.
+
+### Metadata-driven ingestion
+
+**Decision:** source configuration lives in a control table
+(`ops.control`) rather than in code. Loaders take a source name, look up
+the row, and derive their source path and target table from it.
+
+**Reasoning:** adding a source becomes an INSERT rather than a new
+function and notebook. The two loaders are generic — one handles any
+batch source, the other any streaming source — so the code does not grow
+with the number of sources.
+
+Paths and table names are stored relative (`price-paid/complete/`,
+`price_paid_complete`) rather than fully qualified. The storage account
+and catalog are environment-specific and come from configuration, so the
+same control table rows are valid in both dev and prod.
+
+**Consequences:** a misconfigured row fails at lookup rather than at load,
+which is the intended behaviour — `get_source_config` raises if the source
+is absent or disabled rather than silently doing nothing. The control
+table is currently seeded manually via a setup notebook.
+
+### Run logging
+
+**Decision:** every pipeline execution writes a row to `ops.run_log` at
+start and updates it on completion, recording run ID, source, start and
+end timestamps, rows written, status and error detail.
+
+**Reasoning:** the run ID stamped on bronze rows joins back to this table,
+so any row can be traced to the execution that wrote it. Logging the start
+separately from the completion means an execution that dies outright —
+cluster failure, killed job — leaves a row stuck at `running`, which is
+distinguishable from one that failed and recorded why.
+
+Loaders wrap their work in try/except: a failure updates the log to
+`failed` with the exception message, then re-raises so the job itself
+fails rather than appearing to succeed.
+
+**Consequences:** the log is updated in place, so Delta rewrites files on
+each completion. Acceptable at this frequency; a higher-volume pipeline
+would use append-only state transitions instead.
+
+Row counts are taken from Delta's `operationMetrics` for the batch loader
+and from the streaming query's progress records for the stream loader,
+rather than counting the DataFrame. Counting would trigger a second full
+read of the source. The metrics approach assumes no concurrent writer to
+the target table, which holds for a single-writer pipeline.
+
+### Ingestion metadata as two functions
+
+**Decision:** provenance columns are added by two functions —
+`add_ingestion_metadata` for run ID and timestamp, `add_source_filename`
+for the file path.
+
+**Reasoning:** `_metadata.file_path` only resolves on file-based
+DataFrames, so a function using it cannot be unit tested against a
+DataFrame built in memory. Splitting it out leaves `add_ingestion_metadata`
+genuinely pure and testable, and isolates the file dependency in a single
+line documented as requiring a file-based source.
+
+**Consequences:** loaders call both. The filename function is verified by
+running the pipeline rather than by unit test.
