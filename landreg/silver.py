@@ -88,3 +88,24 @@ def transform_to_silver(df: DataFrame, run_id: str) -> DataFrame:
 
 def split_quarantine(df: DataFrame) -> tuple[DataFrame, DataFrame]:
     """Return (clean, quarantined) based on the three fatal rules."""
+    reason = F.concat_ws(
+        ", ",
+        F.when(F.col("transaction_id").isNull(), "missing transaction id"),
+        F.when(F.col("price").isNull(), "invalid or missing price"),
+        F.when(F.col("date_of_transfer").isNull(), "invalid or missing date_of_transfer")
+    )
+
+    is_bad = (
+        F.col("transaction_id").isNull()
+        | F.col("price").isNull()
+        | F.col("date_of_transfer").isNull()
+    )
+
+    clean = df.filter(~is_bad)
+    quarantined = (
+        df.filter(is_bad)
+        .withColumn("quarantine_reason", reason)
+        .withColumn("quarantined_at", F.current_timestamp())
+    )
+
+    return clean, quarantined
