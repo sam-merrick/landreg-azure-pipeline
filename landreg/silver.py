@@ -23,15 +23,19 @@ POSTCODE_SENTINEL = "UNKNOWN"
 def cast_source_types(df: DataFrame) -> DataFrame:
     """Cast price to long and date_of_transfer to date.
 
-    Invalid values become null rather than raising, so they surface as
-    quarantine candidates rather than failing the load.
+    Uses try_cast so malformed values become null rather than raising.
+    Databricks runs in ANSI mode, where a plain cast would fail the entire
+    load on a single bad value.
+
+    The original strings are preserved as `price_raw` and
+    `date_of_transfer_raw` so quarantined rows retain what actually arrived.
     """
-    return (
-        df.withColumns({
-            "price": F.col("price").cast(LongType()),
-            "date_of_transfer": F.col("date_of_transfer").cast(DateType())
-        })
-    )
+    return df.withColumns({
+        "price_raw": F.col("price"),
+        "date_of_transfer_raw": F.col("date_of_transfer"),
+        "price": F.col("price").try_cast(LongType()),
+        "date_of_transfer": F.col("date_of_transfer").try_cast(DateType()),
+    })
 
 
 def normalise_sentinels(df: DataFrame) -> DataFrame:
@@ -80,3 +84,7 @@ def transform_to_silver(df: DataFrame, run_id: str) -> DataFrame:
     df = flag_price_outliers(df)
     df = flag_unknown_categories(df)
     return add_silver_metadata(df, run_id)
+
+
+def split_quarantine(df: DataFrame) -> tuple[DataFrame, DataFrame]:
+    """Return (clean, quarantined) based on the three fatal rules."""
