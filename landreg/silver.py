@@ -5,9 +5,12 @@ Silver applies typing and quality flags. Fatal failures route to
 silver quarantine rather than failing the load.
 """
 
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, DateType
+
+from landreg.config import BRONZE_SCHEMA, SILVER_SCHEMA, table
+from landreg.runlog import start_run, complete_run
 
 VALID_PROPERTY_TYPES = {"D", "S", "T", "F", "O"}
 VALID_OLD_OR_NEW = {"Y", "N"}
@@ -109,3 +112,92 @@ def split_quarantine(df: DataFrame) -> tuple[DataFrame, DataFrame]:
     )
 
     return clean, quarantined
+
+
+def select_clean_cols(df: DataFrame) -> DataFrame:
+    """Shape clean rows to the silver transactions table schema."""
+    return df.select(
+            "transaction_id",
+            "price",
+            "date_of_transfer",
+            "postcode",
+            "property_type",
+            "old_or_new",
+            "duration",
+            "paon",
+            "saon",
+            "street",
+            "locality",
+            "town_city",
+            "district",
+            "county",
+            "category_type",
+            F.lit(False).alias("is_deleted"),
+            "is_price_outlier",
+            "has_unknown_category",
+            "run_id",
+            "first_seen",
+            "last_seen"
+    )
+
+
+def select_quarantine_cols(df: DataFrame) -> DataFrame:
+    """Shape quarantined rows to the quarantine table schema.
+
+    Uses the preserved raw strings for price and date, since the cast
+    versions are null — which is why the row was quarantined.
+    """
+    return df.select(
+            "transaction_id",
+            F.col("price_raw").alias("price"),
+            F.col("date_of_transfer_raw").alias("date_of_transfer"),
+            "postcode",
+            "property_type",
+            "old_or_new",
+            "duration",
+            "paon",
+            "saon",
+            "street",
+            "locality",
+            "town_city",
+            "district",
+            "county",
+            "category_type",
+            "record_status",
+            "run_id",
+            "source_filename",
+            "ingestion_timestamp",
+            "quarantine_reason",
+            "quarantined_at"
+    )
+
+
+def load_silver_backfill(spark: SparkSession, run_id: str) -> None:
+    """Read the bronze backfill, transform, and write to silver."""
+    start_run(spark, run_id, "silver_backfill")
+    print(f"[{run_id}] Loading bronze.price_paid_complete into silver")
+
+    try:
+        df = spark.read.table(table(BRONZE_SCHEMA, "price_paid_complete"))
+        df = transform_to_silver(df, run_id)
+
+        clean, quarantined = split_quarantine(df)
+
+        select_clean_cols(clean).write.mode("append").saveAsTable(
+            table(SILVER_SCHEMA, "price_paid_transactions")
+        )
+
+        select_quarantine_cols(quarantined).write.mode("append").saveAsTable(
+            table(SILVER_SCHEMA, "price_paid_quarantine")
+        )
+
+        history = spark.sql(
+            f"DESCRIBE HISTORY {table(SILVER_SCHEMA, 'price_paid_transactions')} LIMIT 1"
+        ).collect()
+        rows_written = int(history[0]["operationMetrics"]["numOutputRows"])
+
+        complete_run(spark, run_id, "succeeded", rows_written=rows_written)
+
+    except Exception as e:
+        complete_run(spark, run_id, "failed", error_message=str(e))
+        raise
