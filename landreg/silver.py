@@ -6,6 +6,7 @@ silver quarantine rather than failing the load.
 """
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.window import Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType, DateType
 
@@ -172,6 +173,76 @@ def select_quarantine_cols(df: DataFrame) -> DataFrame:
     )
 
 
+def deduplicate_by_latest(df: DataFrame) -> DataFrame:
+    """Return one row per transaction for correct silver MERGE.
+
+    One row per transaction, latest ingestion wins, because Delta errors when a
+    MERGE matches the same target row more than once.
+    """
+    rn_window_spec = Window.partitionBy("transaction_id").orderBy(F.desc("ingestion_timestamp"))
+    return (df
+             .withColumn("row_num", F.row_number().over(rn_window_spec))
+             .filter(F.col("row_num") == 1)
+             .drop("row_num")
+            )
+
+
+def merge_into_silver(spark: SparkSession, df: DataFrame) -> None:
+    """Merge transformed monthly records into the silver transactions table.
+
+    Clause order is significant: the deletion case must precede the general
+    matched case, since Delta takes the first clause that matches.
+
+    `first_seen` is deliberately absent from the update clause so an existing
+    row retains when it was first observed. Deletions set only the flag and
+    timestamp, leaving the row's values as last known.
+
+    The source must be deduplicated to one row per transaction_id — Delta
+    errors if a merge matches the same target row more than once.
+    """
+    df.createOrReplaceTempView("silver_source")
+    
+    spark.sql(f"""            
+        MERGE INTO {table(SILVER_SCHEMA, 'price_paid_transactions')} AS t
+        USING silver_source AS s
+        ON t.transaction_id = s.transaction_id
+        
+        WHEN MATCHED AND s.record_status = 'D' THEN UPDATE SET 
+            t.is_deleted = TRUE, 
+            t.last_seen = current_timestamp()
+        WHEN MATCHED THEN UPDATE SET 
+            t.price = s.price,
+            t.date_of_transfer = s.date_of_transfer,
+            t.postcode = s.postcode,
+            t.property_type = s.property_type,
+            t.old_or_new = s.old_or_new,
+            t.duration = s.duration,
+            t.paon = s.paon,
+            t.saon = s.saon,
+            t.street = s.street,
+            t.locality = s.locality,
+            t.town_city = s.town_city,
+            t.district = s.district,
+            t.county = s.county,
+            t.category_type = s.category_type,
+            t.is_deleted = FALSE,
+            t.is_price_outlier = s.is_price_outlier,
+            t.has_unknown_category = s.has_unknown_category,
+            t.run_id = s.run_id,
+            t.last_seen = s.last_seen
+        WHEN NOT MATCHED AND s.record_status != 'D' THEN INSERT (
+            transaction_id, price, date_of_transfer, postcode, property_type, old_or_new,
+            duration, paon, saon, street, locality, town_city, district, county, category_type,
+            is_deleted, is_price_outlier, has_unknown_category, run_id, first_seen, last_seen
+            ) VALUES (
+            s.transaction_id, s.price, s.date_of_transfer, s.postcode, s.property_type, s.old_or_new,
+            s.duration, s.paon, s.saon, s.street, s.locality, s.town_city, s.district, s.county, s.category_type,
+            FALSE, s.is_price_outlier, s.has_unknown_category, s.run_id, s.first_seen, s.last_seen
+            )
+    """
+    )
+
+
 def load_silver_backfill(spark: SparkSession, run_id: str) -> None:
     """Read the bronze backfill, transform, and write to silver."""
     start_run(spark, run_id, "silver_backfill")
@@ -194,10 +265,42 @@ def load_silver_backfill(spark: SparkSession, run_id: str) -> None:
         history = spark.sql(
             f"DESCRIBE HISTORY {table(SILVER_SCHEMA, 'price_paid_transactions')} LIMIT 1"
         ).collect()
-        rows_written = int(history[0]["operationMetrics"]["numOutputRows"])
+        metrics = history[0]["operationMetrics"]
+        rows_written = int(metrics["numOutputRows"])
 
         complete_run(spark, run_id, "succeeded", rows_written=rows_written)
 
+    except Exception as e:
+        complete_run(spark, run_id, "failed", error_message=str(e))
+        raise
+
+
+def load_silver_incremental(spark: SparkSession, run_id: str) -> None:
+    """Read the bronze incremental load, transform, and MERGE into silver."""
+    start_run(spark, run_id, "silver_incremental")
+    print(f"[{run_id}] Loading bronze.price_paid_monthly into silver")
+
+    try:
+        df = spark.read.table(table(BRONZE_SCHEMA, "price_paid_monthly"))
+        df = transform_to_silver(df, run_id)
+
+        clean, quarantined = split_quarantine(df)
+
+        select_quarantine_cols(quarantined).write.mode("append").saveAsTable(
+            table(SILVER_SCHEMA, "price_paid_quarantine")
+        )
+
+        clean = deduplicate_by_latest(clean)
+
+        merge_into_silver(spark, clean)
+
+        history = spark.sql(
+            f"DESCRIBE HISTORY {table(SILVER_SCHEMA, 'price_paid_transactions')} LIMIT 1"
+        ).collect()
+        metrics = history[0]["operationMetrics"]
+        rows_written = int(metrics["numTargetRowsInserted"]) + int(metrics["numTargetRowsUpdated"])
+
+        complete_run(spark, run_id, "succeeded", rows_written=rows_written)
     except Exception as e:
         complete_run(spark, run_id, "failed", error_message=str(e))
         raise
