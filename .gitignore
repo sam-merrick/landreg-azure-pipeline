@@ -223,3 +223,4 @@ data/
 *.csv
 *.parquet
 .venv/
+scratch.py

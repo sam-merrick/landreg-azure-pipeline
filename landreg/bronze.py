@@ -81,7 +81,12 @@ def load_stream_source(spark: SparkSession, source_name: str, run_id: str) -> No
         )
         query.awaitTermination()
 
-        rows_written = sum(p["numInputRows"] or 0 for p in query.recentProgress)
+        rows_written = sum(
+            source["numInputRows"]
+            for progress in query.recentProgress
+            for source in progress["sources"]
+            )
+        
         complete_run(spark, run_id, "succeeded", rows_written=rows_written)
 
     except Exception as e:

@@ -72,7 +72,9 @@ is needed downstream.
 
 `transaction_id` is unique and never null in both files. C (change) records carry
 existing IDs which indicates the ID is stable across corrections. Strong evidence
-from one file; this is to be confirmed against the next monthly release.
+from one file. Confirmed against the August 2026 file: 370 change records reference
+transaction identifiers also present in the July file, so identifiers are
+stable across corrections rather than reissued.
 
 ### Snapshot timing
 
@@ -174,7 +176,9 @@ purged later if required, but deleted rows cannot be recovered.
 transactions do not appear in reporting. Silver row counts will exceed the
 count of live transactions. A purge process may be needed if retention
 policy later requires it. The deletion audit trail begins at the backfill date, and 
-transactions deleted before it are absent with no record.
+transactions deleted before it are absent with no record. Verified against the August 
+file: 1,488 of 1,514 deletion records matched existing silver rows and set the flag. 
+The remaining 26 referenced identifiers not present in silver and were ignored, as designed.
 
 ### Merge behaviour
 
@@ -435,3 +439,53 @@ line documented as requiring a file-based source.
 
 **Consequences:** loaders call both. The filename function is verified by
 running the pipeline rather than by unit test.
+
+### Silver layer design
+
+**Tables:** `silver.price_paid_transactions` holds the merged current state,
+partitioned by `transfer_year` (a Delta generated column derived from
+`date_of_transfer`). `silver.price_paid_quarantine` holds rows that failed a
+fatal rule, with all source columns retained as strings.
+
+**Typing:** `price` to BIGINT and `date_of_transfer` to DATE. Everything else
+stays string. `try_cast` is used rather than `cast` — Databricks runs in ANSI
+mode, where a plain cast raises on malformed input and would fail the entire
+load on one bad value. The original strings are preserved as `price_raw` and
+`date_of_transfer_raw` so a quarantined row retains what actually arrived,
+since by definition its cast value is null.
+
+**Fatal rules:** a row is quarantined when `transaction_id`, `price` or
+`date_of_transfer` is null after casting. These three cannot be absent from a
+usable transaction: the first is the merge key, and the other two are the
+record. Every other quality problem is flagged rather than rejected.
+
+**Metadata:** `first_seen` and `last_seen` are tracked separately. A merge
+updates `last_seen` and deliberately leaves `first_seen` untouched, so a row
+retains when it was first observed regardless of how often it is corrected.
+
+### Deduplication before merge
+
+**Decision:** the merge source is reduced to one row per `transaction_id`,
+keeping the latest by `ingestion_timestamp`.
+
+**Reasoning:** Delta raises an error when a merge matches the same target row
+more than once. Bronze accumulates every monthly file, so a transaction
+corrected across consecutive months appears multiple times. Observed in
+practice: the July and August files share 650 transaction identifiers.
+
+**Consequences:** rows sharing an ingestion timestamp have no deterministic
+order. This does not arise today, since `transaction_id` is unique within each
+source file, but it would if a single file ever contained duplicates.
+
+### Incremental scope
+
+**Known limitation:** each silver run reads the whole of
+`bronze.price_paid_monthly` rather than only rows added since the last run.
+Deduplication makes this correct but not efficient — the merge processed
+191,817 source rows for two months of changes, and that figure grows by
+roughly 90,000 each month.
+
+Filtering bronze by `run_id` or `ingestion_timestamp` against the last
+successful silver run would restrict each merge to new rows. Not implemented:
+at current volume the merge completes in under 90 seconds and the complexity
+is not yet justified.
