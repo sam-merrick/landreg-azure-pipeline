@@ -9,7 +9,8 @@ attributes, Type 1 on address fields.
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from landreg.config import GOLD_SCHEMA, table, start_run, complete_run
+from landreg.config import GOLD_SCHEMA, table
+from landreg.runlog import start_run, complete_run
 
 
 def build_dim_date(spark: SparkSession, start: str, end: str) -> DataFrame:
