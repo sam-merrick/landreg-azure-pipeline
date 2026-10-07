@@ -13,6 +13,8 @@ from pyspark.sql.window import Window
 from landreg.config import GOLD_SCHEMA, SILVER_SCHEMA, table
 from landreg.runlog import start_run, complete_run
 
+SCD_START_DATE = "1900-01-01"
+
 
 def build_dim_date(spark: SparkSession, start: str, end: str) -> DataFrame:
     """Generate one row per calendar date between start and end inclusive.
@@ -46,8 +48,9 @@ def build_property_source(df: DataFrame) -> DataFrame:
     """Collapse silver transactions to one row per property.
 
     Attributes are taken from the property's most recent transaction, and
-    valid_from is that transaction's date — the point at which those
-    attributes were last observed.
+    valid_from is that transaction's date. For a property not yet in the
+    dimension this is overridden to SCD_START_DATE in build_staged_source,
+    so historical transactions resolve against its first version.
 
     Deleted transactions are excluded since a withdrawn record isn't evidence
     of a property's current attributes.
@@ -56,41 +59,15 @@ def build_property_source(df: DataFrame) -> DataFrame:
     df = df.withColumn("property_nk", F.concat_ws("|", "postcode", "paon", "saon"))
 
     latest = Window.partitionBy("property_nk").orderBy(F.desc("date_of_transfer"))
-    df = (
+    return (
         df.withColumn("row_num", F.row_number().over(latest))
         .filter(F.col("row_num") == 1)
         .drop("row_num")
-    )
-
-    df = df.withColumns({
-         "valid_from": F.col("date_of_transfer"),
-         "valid_to": F.lit(None).cast("date"),
-         "is_current": F.lit(True)
+        .withColumns({
+            "valid_from": F.col("date_of_transfer"),
+            "valid_to": F.lit(None).cast("date"),
+            "is_current": F.lit(True),
         })
-
-    return df.withColumn(
-         "property_sk", F.xxhash64(F.col("property_nk"), F.col("valid_from"))
-    )
-
-
-def select_dim_property_cols(df: DataFrame) -> DataFrame:
-    """Shape property rows to the dim_property table schema."""
-    return df.select(
-            "property_sk",
-            "property_nk",
-            "postcode",
-            "property_type",
-            "duration",
-            "paon",
-            "saon",
-            "street",
-            "locality",
-            "town_city",
-            "district",
-            "county",
-            "valid_from",
-            "valid_to",
-            "is_current"
     )
 
 
@@ -101,6 +78,9 @@ def build_staged_source(source: DataFrame, current_dim: DataFrame) -> DataFrame:
     Rows whose tracked attributes differ from the current dimension version
     are emitted a second time with a NULL `merge_key`, which cannot match on
     the merge join and therefore inserts as a new version.
+
+    A property not yet in the dimension opens at SCD_START_DATE rather than
+    its transaction date, so historical transactions resolve against it.
     """
     dim = current_dim.select(
         "property_nk",
@@ -109,7 +89,17 @@ def build_staged_source(source: DataFrame, current_dim: DataFrame) -> DataFrame:
         F.lit(True).alias("exists_in_dim"),
     )
 
-    joined = source.join(dim, on="property_nk", how="left")
+    joined = (
+        source.join(dim, on="property_nk", how="left")
+        .withColumn(
+            "valid_from",
+            F.when(F.col("exists_in_dim").isNull(), F.lit(SCD_START_DATE).cast("date"))
+            .otherwise(F.col("valid_from")),
+        )
+        .withColumn(
+            "property_sk", F.xxhash64(F.col("property_nk"), F.col("valid_from"))
+        )
+    )
 
     changed = joined.filter(
         F.col("exists_in_dim").isNotNull()
@@ -117,9 +107,12 @@ def build_staged_source(source: DataFrame, current_dim: DataFrame) -> DataFrame:
             ~F.col("property_type").eqNullSafe(F.col("dim_property_type"))
             | ~F.col("duration").eqNullSafe(F.col("dim_duration"))
         )
-    ).drop("dim_property_type", "dim_duration", "exists_in_dim")
+    )
 
-    all_rows = source.withColumn("merge_key", F.col("property_nk"))
+    joined = joined.drop("dim_property_type", "dim_duration", "exists_in_dim")
+    changed = changed.drop("dim_property_type", "dim_duration", "exists_in_dim")
+
+    all_rows = joined.withColumn("merge_key", F.col("property_nk"))
     new_versions = changed.withColumn("merge_key", F.lit(None).cast("string"))
 
     return all_rows.unionByName(new_versions)
@@ -196,7 +189,6 @@ def load_dim_property(spark: SparkSession, run_id: str) -> None:
     try:
         df = spark.read.table(table(SILVER_SCHEMA, "price_paid_transactions"))
         df = build_property_source(df)
-        df = select_dim_property_cols(df)
         current_dim = spark.read.table(table(GOLD_SCHEMA, "dim_property")).filter("is_current")
         df = build_staged_source(df, current_dim)
         
