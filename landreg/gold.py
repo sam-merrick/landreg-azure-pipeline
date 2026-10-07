@@ -52,10 +52,9 @@ def build_property_source(df: DataFrame) -> DataFrame:
     dimension this is overridden to SCD_START_DATE in build_staged_source,
     so historical transactions resolve against its first version.
 
-    Deleted transactions are excluded since a withdrawn record isn't evidence
-    of a property's current attributes.
+    All transactions are considered, including withdrawn ones, so that 
+    every property appearing in the fact has a dimension row to resolve against.
     """
-    df = df.filter(~F.col("is_deleted"))
     df = df.withColumn("property_nk", F.concat_ws("|", "postcode", "paon", "saon"))
 
     latest = Window.partitionBy("property_nk").orderBy(F.desc("date_of_transfer"))
