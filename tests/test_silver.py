@@ -1,13 +1,7 @@
-""""""
-import pytest
-from pyspark.sql import SparkSession
 from datetime import datetime
 
 from landreg.silver import cast_source_types, split_quarantine, flag_price_outliers, flag_unknown_categories, deduplicate_by_latest
 
-@pytest.fixture(scope="session")
-def spark():
-    return SparkSession.builder.master("local[1]").appName("tests").getOrCreate()
 
 def test_split_quarantine_separates_bad_rows(spark):
     df = spark.createDataFrame(

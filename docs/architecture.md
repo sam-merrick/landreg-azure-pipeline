@@ -489,3 +489,124 @@ Filtering bronze by `run_id` or `ingestion_timestamp` against the last
 successful silver run would restrict each merge to new rows. Not implemented:
 at current volume the merge completes in under 90 seconds and the complexity
 is not yet justified.
+
+### Gold dimensional model
+
+**Grain:** `fact_transaction` holds one row per property transaction.
+`dim_property` holds one row per property per version of its tracked
+attributes. `dim_date` holds one row per calendar date.
+
+**Fact versus dimension:** a column describing the *event* belongs on the
+fact, one describing the *thing* belongs on a dimension. `old_or_new`
+records whether a sale was of a newly built property, so it is a property
+of the sale rather than of the building and sits on the fact.
+`property_type` and `duration` describe the building and sit on the
+dimension.
+
+**Degenerate dimension:** `transaction_id` is retained on the fact. It is
+the natural key of the event itself with no attributes of its own, so it
+needs no dimension table.
+
+**Denormalised date:** `date_of_transfer` is carried on the fact alongside
+`date_key`. This duplicates data held in `dim_date`, but allows partition
+pruning and simple date filters without a join. `date_key` is computed
+from the date rather than resolved by joining `dim_date`, since the value
+is derivable and a join at 31.5 million rows would be wasteful.
+
+### Surrogate keys
+
+**Decision:** surrogate keys are generated with `xxhash64` over the
+natural key and `valid_from`.
+
+**Reasoning:** the hash is deterministic, so reprocessing produces the
+same key for the same version and existing fact rows remain valid.
+`monotonically_increasing_id()` is not stable across runs — a
+reprocessed dimension would reissue different keys and orphan every fact
+row referencing the old ones.
+
+**Consequences:** a 64-bit hash carries a collision probability of roughly
+one in four billion at this cardinality. This was accepted over a wider
+`sha2` hash for smaller keys and faster joins.
+
+Address components are coalesced to empty strings before concatenation.
+`concat_ws` drops nulls entirely, so a property with no SAON produced the
+same natural key as one with no PAON. Fixing this separated 276 properties
+that had been sharing a key and therefore a single dimension version.
+
+### SCD Type 2 on dim_property
+
+**Decision:** `property_type` and `duration` are tracked as Type 2 —
+a change closes the current version and opens a new one. Address fields
+are Type 1 and updated in place.
+
+**Reasoning:** a hybrid avoids versioning on changes that say nothing
+about the building. Address fields are derivable from the postcode and
+drift in the source through respelling and administrative reorganisation,
+so tracking them as Type 2 would create versions recording no meaningful
+change.
+
+**Implementation:** a Delta merge cannot both update a matched row and
+insert a new one for the same match. The merge source therefore emits
+changed properties twice: once with `merge_key` set to the natural key,
+which matches and closes the existing version, and once with a NULL
+`merge_key`, which cannot match and falls through to the insert clause as
+the new version.
+
+**Consequences:** the fact stores the surrogate key of the version current
+at the transaction date, not the latest version. A transaction from 2005
+therefore reports the property as it was recorded in 2005, which is the
+historical accuracy the pattern exists to preserve.
+
+### Version dating
+
+**Decision:** a property's first version opens at a sentinel date of
+1900-01-01 rather than its earliest transaction date.
+
+**Reasoning:** the fact resolves `property_sk` by finding the version
+whose date range contains the transaction date. Dating the first version
+from an observed transaction would leave any earlier transaction
+unresolvable — including corrections to historical sales, which arrive
+regularly in the monthly change files.
+
+**Consequences:** `valid_from` on a first version does not correspond to
+anything observed. It means "no earlier bound" rather than a date the
+property was first seen.
+
+### Deleted transactions in gold
+
+**Decision:** deleted transactions are carried into the fact with their
+`is_deleted` flag, and the property dimension is built from all
+transactions including deleted ones.
+
+**Reasoning:** consumers filter on the flag rather than having the
+decision made for them. The dimension cannot exclude deleted transactions
+while the fact includes them: 270 properties have no surviving live
+transaction, and excluding them would leave their fact rows unable to
+resolve a surrogate key.
+
+**Consequences:** a property whose only transaction was withdrawn carries
+attributes derived from that withdrawn record.
+
+### Fact load strategy
+
+**Decision:** `fact_transaction` is rebuilt in full with an overwrite on
+each run. `dim_property` is merged. `dim_date` is regenerated.
+
+**Reasoning:** the fact is derived entirely from silver, so a full rebuild
+is always consistent and needs no merge logic or watermark. At 31.6
+million rows the rebuild is acceptable; an incremental merge keyed on
+`transaction_id` would be the next step if it stopped being so.
+
+**Consequences:** the whole fact is rewritten even when a single month of
+changes arrives upstream.
+
+### Dimension partitioning
+
+**Decision:** `dim_property` is not partitioned.
+
+**Reasoning:** it is joined on `property_sk`, a hashed high-cardinality
+key that distributes randomly and would produce millions of tiny
+partitions. `is_current` would give two badly unbalanced partitions, and
+any address-derived column would skew between dense urban and sparse
+rural areas. Z-ordering on `property_sk` is the appropriate lever if join
+performance becomes a problem.
