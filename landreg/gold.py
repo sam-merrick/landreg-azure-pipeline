@@ -160,6 +160,57 @@ def merge_dim_property(spark: SparkSession, df: DataFrame) -> None:
     )
 
 
+def build_fact_transaction(df: DataFrame, dim_property: DataFrame, run_id: str) -> DataFrame:
+    """Build fact rows from silver, resolving dimension surrogate keys.
+
+    Each transaction joins to the property version that was current on its
+    transfer date, so a fact row references the property as it was recorded
+    at the time rather than as it is now. The upper bound is exclusive:
+    a closed version's valid_to equals the next version's valid_from.
+
+    The join is a left join by design. A transaction that fails to resolve
+    keeps a null property_sk and fails the table's NOT NULL constraint at
+    write time, which surfaces the problem rather than silently dropping
+    the row as an inner join would.
+
+    date_key is derived from date_of_transfer rather than joined from
+    dim_date, since the key is computable and the join would be wasteful
+    at this volume.
+    """
+    df = df.withColumn("property_nk", F.concat_ws("|", "postcode", "paon", "saon"))
+    dim = dim_property.select(
+        "property_nk",
+        "property_sk",
+        "valid_from",
+        "valid_to"
+    )
+
+    joined = (
+        df.join(
+        dim,
+        (df.property_nk == dim.property_nk)
+        & (df.date_of_transfer >= dim.valid_from)
+        & ((df.date_of_transfer < dim.valid_to) | dim.valid_to.isNull()), 
+        how="left")
+        .drop(dim.property_nk)
+        .withColumn("date_key", F.date_format("date_of_transfer", "yyyyMMdd").cast("int"))
+    )
+
+    return joined.select(
+            "transaction_id",
+            "property_sk",
+            "date_key",
+            "date_of_transfer",
+            "price",
+            "old_or_new",
+            "category_type",
+            "is_deleted",
+            "is_price_outlier",
+            "has_unknown_category",
+            F.lit(run_id).alias("run_id")
+    )
+
+
 def load_dim_date(spark: SparkSession, run_id: str, start: str, end: str) -> None:
     """Generate and write the date dimension. Overwrites on each run."""
     start_run(spark, run_id, "gold_dim_date")
@@ -199,6 +250,35 @@ def load_dim_property(spark: SparkSession, run_id: str) -> None:
         ).collect()
         metrics = history[0]["operationMetrics"]
         rows_written = int(metrics["numTargetRowsInserted"]) + int(metrics["numTargetRowsUpdated"])
+
+        complete_run(spark, run_id, "succeeded", rows_written=rows_written)
+
+    except Exception as e:
+        complete_run(spark, run_id, "failed", error_message=str(e))
+        raise
+
+
+def load_fact_transaction(spark: SparkSession, run_id: str) -> None:
+    """Rebuild the transaction fact table from silver.
+
+    Overwrites on each run: the fact is derived entirely from silver, so a
+    full rebuild keeps it consistent without needing merge logic.
+    """
+    start_run(spark, run_id, "gold_fact_transaction")
+    print(f"[{run_id}] Building fact_transaction")
+
+    try:
+        df = spark.read.table(table(SILVER_SCHEMA, "price_paid_transactions"))
+        dim = spark.read.table(table(GOLD_SCHEMA, "dim_property"))
+
+        df = build_fact_transaction(df, dim, run_id)
+
+        df.write.mode("overwrite").saveAsTable(table(GOLD_SCHEMA, "fact_transaction"))
+
+        history = spark.sql(
+            f"DESCRIBE HISTORY {table(GOLD_SCHEMA, 'fact_transaction')} LIMIT 1"
+        ).collect()
+        rows_written = int(history[0]["operationMetrics"]["numOutputRows"])
 
         complete_run(spark, run_id, "succeeded", rows_written=rows_written)
 
