@@ -1,11 +1,5 @@
-import pytest
-from pyspark.sql import SparkSession
-
 from landreg.bronze import add_ingestion_metadata
 
-@pytest.fixture(scope="session")
-def spark():
-    return SparkSession.builder.master("local[1]").appName("tests").getOrCreate()
 
 def test_adds_metadata_columns(spark):
     df = spark.createDataFrame(

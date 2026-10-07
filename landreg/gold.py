@@ -6,7 +6,7 @@ property and date dimensions. Property is a hybrid SCD — Type 2 on
 attributes, Type 1 on address fields.
 """
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Column
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
@@ -44,6 +44,21 @@ def build_dim_date(spark: SparkSession, start: str, end: str) -> DataFrame:
     })
 
 
+def property_natural_key() -> Column:
+    """Build the property natural key from its address components.
+
+    Null components are coalesced to empty strings so the separator count
+    stays fixed. Without this, concat_ws drops nulls entirely and a
+    property with no SAON would collide with one that has no PAON.
+    """
+    return F.concat_ws(
+        "|",
+        F.coalesce(F.col("postcode"), F.lit("")),
+        F.coalesce(F.col("paon"), F.lit("")),
+        F.coalesce(F.col("saon"), F.lit("")),
+    )
+
+
 def build_property_source(df: DataFrame) -> DataFrame:
     """Collapse silver transactions to one row per property.
 
@@ -55,7 +70,7 @@ def build_property_source(df: DataFrame) -> DataFrame:
     All transactions are considered, including withdrawn ones, so that 
     every property appearing in the fact has a dimension row to resolve against.
     """
-    df = df.withColumn("property_nk", F.concat_ws("|", "postcode", "paon", "saon"))
+    df = df.withColumn("property_nk", property_natural_key())
 
     latest = Window.partitionBy("property_nk").orderBy(F.desc("date_of_transfer"))
     return (
@@ -176,7 +191,7 @@ def build_fact_transaction(df: DataFrame, dim_property: DataFrame, run_id: str) 
     dim_date, since the key is computable and the join would be wasteful
     at this volume.
     """
-    df = df.withColumn("property_nk", F.concat_ws("|", "postcode", "paon", "saon"))
+    df = df.withColumn("property_nk", property_natural_key())
     dim = dim_property.select(
         "property_nk",
         "property_sk",
