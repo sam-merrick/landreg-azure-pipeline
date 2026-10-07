@@ -528,6 +528,11 @@ row referencing the old ones.
 one in four billion at this cardinality. This was accepted over a wider
 `sha2` hash for smaller keys and faster joins.
 
+Address components are coalesced to empty strings before concatenation.
+`concat_ws` drops nulls entirely, so a property with no SAON produced the
+same natural key as one with no PAON. Fixing this separated 276 properties
+that had been sharing a key and therefore a single dimension version.
+
 ### SCD Type 2 on dim_property
 
 **Decision:** `property_type` and `duration` are tracked as Type 2 —
