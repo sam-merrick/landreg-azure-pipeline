@@ -1,0 +1,13 @@
+{
+	"name": "ls_databricks_dev",
+	"properties": {
+		"annotations": [],
+		"type": "AzureDatabricks",
+		"typeProperties": {
+			"domain": "https://adb-7405610011076375.15.azuredatabricks.net",
+			"authentication": "MSI",
+			"workspaceResourceId": "/subscriptions/68461a48-03f1-477f-89c6-300fe84f23ba/resourceGroups/rg-landreg-dev-uks/providers/Microsoft.Databricks/workspaces/dbw-landreg-dev-uks",
+			"existingClusterId": "0924-163346-jgws1o1s"
+		}
+	}
+}
