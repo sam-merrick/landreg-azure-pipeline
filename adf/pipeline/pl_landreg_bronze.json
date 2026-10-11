@@ -15,7 +15,7 @@
 				},
 				"userProperties": [],
 				"typeProperties": {
-					"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/adf_get_sources"
+					"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/adf_get_sources"
 				},
 				"linkedServiceName": {
 					"referenceName": "ls_databricks_dev",
@@ -36,7 +36,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"items": {
-						"value": "@json(activity('Get enabled sources').output.runOutput)",
+						"value": "@activity('Get enabled sources').output.runOutput",
 						"type": "Expression"
 					},
 					"activities": [
@@ -67,7 +67,7 @@
 												},
 												"userProperties": [],
 												"typeProperties": {
-													"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/bronze_ingest_complete",
+													"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/bronze_ingest_complete",
 													"baseParameters": {
 														"source_name": "@item().source_name"
 													}
@@ -95,7 +95,7 @@
 												},
 												"userProperties": [],
 												"typeProperties": {
-													"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/bronze_ingest_monthly",
+													"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/bronze_ingest_monthly",
 													"baseParameters": {
 														"source_name": "@item().source_name"
 													}
