@@ -1,0 +1,131 @@
+{
+	"name": "pl_landreg_bronze",
+	"properties": {
+		"activities": [
+			{
+				"name": "Get enabled sources",
+				"type": "DatabricksNotebook",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/adf_get_sources"
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_databricks_dev",
+					"type": "LinkedServiceReference"
+				}
+			},
+			{
+				"name": "For each source",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get enabled sources",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@json(activity('Get enabled sources').output.runOutput)",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Route by load type",
+							"type": "Switch",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"on": {
+									"value": "@item().load_type",
+									"type": "Expression"
+								},
+								"cases": [
+									{
+										"value": "batch",
+										"activities": [
+											{
+												"name": "Load batch source",
+												"type": "DatabricksNotebook",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/bronze_ingest_complete",
+													"baseParameters": {
+														"source_name": "@item().source_name"
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "ls_databricks_dev",
+													"type": "LinkedServiceReference"
+												}
+											}
+										]
+									},
+									{
+										"value": "stream",
+										"activities": [
+											{
+												"name": "load incremental source",
+												"type": "DatabricksNotebook",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"notebookPath": "/Workspace/Users/psammerrick@gmail.com/landreg-azure-pipeline/notebooks/bronze_ingest_monthly",
+													"baseParameters": {
+														"source_name": "@item().source_name"
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "ls_databricks_dev",
+													"type": "LinkedServiceReference"
+												}
+											}
+										]
+									}
+								],
+								"defaultActivities": [
+									{
+										"name": "Unknown load type",
+										"type": "Fail",
+										"dependsOn": [],
+										"userProperties": [],
+										"typeProperties": {
+											"message": "Unrecognised load_type in control table",
+											"errorCode": "UnknownLoadType"
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"annotations": []
+	}
+}
