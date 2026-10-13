@@ -1,0 +1,81 @@
+{
+	"name": "pl_landreg_gold",
+	"properties": {
+		"activities": [
+			{
+				"name": "Load dim date",
+				"type": "DatabricksNotebook",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_dim_date"
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_databricks_dev",
+					"type": "LinkedServiceReference"
+				}
+			},
+			{
+				"name": "Load dim property",
+				"type": "DatabricksNotebook",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_dim_property"
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_databricks_dev",
+					"type": "LinkedServiceReference"
+				}
+			},
+			{
+				"name": "Load fact transaction",
+				"type": "DatabricksNotebook",
+				"dependsOn": [
+					{
+						"activity": "Load dim date",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Load dim property",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_fact_transaction"
+				},
+				"linkedServiceName": {
+					"referenceName": "ls_databricks_dev",
+					"type": "LinkedServiceReference"
+				}
+			}
+		],
+		"annotations": []
+	}
+}
