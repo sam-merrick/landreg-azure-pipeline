@@ -1,0 +1,389 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "adf-landreg-dev-uks"
+		},
+		"ls_databricks_dev_properties_typeProperties_existingClusterId": {
+			"type": "string",
+			"defaultValue": "0924-163346-jgws1o1s"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/pl_landreg_bronze')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Get enabled sources",
+						"type": "DatabricksNotebook",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/adf_get_sources"
+						},
+						"linkedServiceName": {
+							"referenceName": "ls_databricks_dev",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "For each source",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Get enabled sources",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Get enabled sources').output.runOutput",
+								"type": "Expression"
+							},
+							"activities": [
+								{
+									"name": "Route by load type",
+									"type": "Switch",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"on": {
+											"value": "@item().load_type",
+											"type": "Expression"
+										},
+										"cases": [
+											{
+												"value": "batch",
+												"activities": [
+													{
+														"name": "Load batch source",
+														"type": "DatabricksNotebook",
+														"dependsOn": [],
+														"policy": {
+															"timeout": "0.12:00:00",
+															"retry": 0,
+															"retryIntervalInSeconds": 30,
+															"secureOutput": false,
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/bronze_ingest_complete",
+															"baseParameters": {
+																"source_name": {
+																	"value": "@item().source_name",
+																	"type": "Expression"
+																}
+															}
+														},
+														"linkedServiceName": {
+															"referenceName": "ls_databricks_dev",
+															"type": "LinkedServiceReference"
+														}
+													}
+												]
+											},
+											{
+												"value": "stream",
+												"activities": [
+													{
+														"name": "load incremental source",
+														"type": "DatabricksNotebook",
+														"dependsOn": [],
+														"policy": {
+															"timeout": "0.12:00:00",
+															"retry": 0,
+															"retryIntervalInSeconds": 30,
+															"secureOutput": false,
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/bronze_ingest_monthly",
+															"baseParameters": {
+																"source_name": {
+																	"value": "@item().source_name",
+																	"type": "Expression"
+																}
+															}
+														},
+														"linkedServiceName": {
+															"referenceName": "ls_databricks_dev",
+															"type": "LinkedServiceReference"
+														}
+													}
+												]
+											}
+										],
+										"defaultActivities": [
+											{
+												"name": "Unknown load type",
+												"type": "Fail",
+												"dependsOn": [],
+												"userProperties": [],
+												"typeProperties": {
+													"message": "Unrecognised load_type in control table",
+													"errorCode": "UnknownLoadType"
+												}
+											}
+										]
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"annotations": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/ls_databricks_dev')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/pl_landreg_gold')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Load dim date",
+						"type": "DatabricksNotebook",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_dim_date"
+						},
+						"linkedServiceName": {
+							"referenceName": "ls_databricks_dev",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "Load dim property",
+						"type": "DatabricksNotebook",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_dim_property"
+						},
+						"linkedServiceName": {
+							"referenceName": "ls_databricks_dev",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "Load fact transaction",
+						"type": "DatabricksNotebook",
+						"dependsOn": [
+							{
+								"activity": "Load dim date",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Load dim property",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/gold_fact_transaction"
+						},
+						"linkedServiceName": {
+							"referenceName": "ls_databricks_dev",
+							"type": "LinkedServiceReference"
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"annotations": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/ls_databricks_dev')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/pl_landreg_master')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Run bronze",
+						"type": "ExecutePipeline",
+						"dependsOn": [],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "pl_landreg_bronze",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run silver",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run bronze",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "pl_landreg_silver",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run gold",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run silver",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "pl_landreg_gold",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"annotations": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/pipelines/pl_landreg_bronze')]",
+				"[concat(variables('factoryId'), '/pipelines/pl_landreg_silver')]",
+				"[concat(variables('factoryId'), '/pipelines/pl_landreg_gold')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/pl_landreg_silver')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Load silver incremental",
+						"type": "DatabricksNotebook",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebookPath": "/Workspace/Shared/landreg-azure-pipeline/notebooks/silver_incremental"
+						},
+						"linkedServiceName": {
+							"referenceName": "ls_databricks_dev",
+							"type": "LinkedServiceReference"
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"annotations": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/ls_databricks_dev')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ls_databricks_dev')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"annotations": [],
+				"type": "AzureDatabricks",
+				"typeProperties": {
+					"domain": "https://adb-7405610011076375.15.azuredatabricks.net",
+					"authentication": "MSI",
+					"workspaceResourceId": "/subscriptions/68461a48-03f1-477f-89c6-300fe84f23ba/resourceGroups/rg-landreg-dev-uks/providers/Microsoft.Databricks/workspaces/dbw-landreg-dev-uks",
+					"existingClusterId": "[parameters('ls_databricks_dev_properties_typeProperties_existingClusterId')]"
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}
