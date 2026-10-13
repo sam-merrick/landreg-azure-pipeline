@@ -610,3 +610,81 @@ partitions. `is_current` would give two badly unbalanced partitions, and
 any address-derived column would skew between dense urban and sparse
 rural areas. Z-ordering on `property_sk` is the appropriate lever if join
 performance becomes a problem.
+
+### Orchestration
+
+**Decision:** Azure Data Factory triggers Databricks notebooks. All
+transformation logic stays in Databricks; ADF only coordinates.
+
+**Reasoning:** keeping compute in one place means the logic is testable as
+a Python package and does not fragment across two engines. ADF's mapping
+data flows could perform transformation, but would duplicate what
+Databricks already does and split the codebase.
+
+**Structure:** one pipeline per medallion layer, chained by a master
+pipeline using Execute Pipeline activities that wait on completion. Each
+layer can be rerun independently — a gold failure does not require
+reprocessing bronze — and the monitoring view attributes failures to a
+layer rather than to the pipeline as a whole.
+
+### Metadata-driven bronze pipeline
+
+**Decision:** the bronze pipeline reads the control table, iterates its
+enabled sources, and routes each by `load_type` to a batch or stream
+notebook.
+
+**Reasoning:** adding a source becomes an INSERT into the control table
+rather than a new pipeline. The routing decision lives in ADF's Switch
+activity rather than inside Python: the pipeline canvas then shows how
+sources are handled, where a notebook dispatching internally would hide it
+a layer down.
+
+An unrecognised `load_type` reaches a Fail activity rather than falling
+through the default branch silently. A source that is misconfigured should
+stop the pipeline, not be skipped.
+
+**Consequences:** notebooks are referenced by absolute workspace path, so a
+rename breaks the pipeline and nothing validates the path until runtime.
+
+### ADF authentication
+
+**Decision:** ADF authenticates to Databricks with its system-assigned
+managed identity. Unity Catalog permissions were granted to that identity
+individually as the pipeline required them.
+
+**Reasoning:** a personal access token would be a secret with an expiry,
+belonging to an individual rather than the pipeline. Managed identity has
+neither problem.
+
+Permissions were added one failure at a time — catalog and schema usage,
+table select and modify, read and write on the landing and metadata
+external locations. Granting workspace admin would have been immediate and
+wrong.
+
+**Consequences:** a new table or external location needs an explicit grant
+before the pipeline can use it, and the failure surfaces at runtime rather
+than at deployment.
+
+### Source control and deployment
+
+**Decision:** ADF is linked to the project repository, with pipeline
+definitions stored under `/adf` and deployment via the Publish action from
+the collaboration branch.
+
+**Reasoning:** pipelines defined only in the portal have no history, no
+review and no way to recover a previous version. Git integration makes them
+reviewable alongside the code they invoke.
+
+**Consequences:** changes must go through a pull request, since branch
+protection applies to ADF's commits as it does to code. The `adf_publish`
+branch holds generated ARM templates and is managed by ADF rather than
+edited directly.
+
+### Schedule
+
+**Decision:** a monthly trigger on the master pipeline, firing on the 22nd
+at 02:00, created in a stopped state.
+
+**Reasoning:** the source publishes monthly around the 20th, so the 22nd
+allows margin if publication slips. The trigger is stopped because this is
+a development subscription with no ongoing data to process.
