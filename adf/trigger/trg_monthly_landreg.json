@@ -1,0 +1,36 @@
+{
+	"name": "trg_monthly_landreg",
+	"properties": {
+		"description": "Monthly refresh, two days after Land Registry publication",
+		"annotations": [],
+		"runtimeState": "Stopped",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "pl_landreg_master",
+					"type": "PipelineReference"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Month",
+				"interval": 1,
+				"startTime": "2026-11-22T02:00:00",
+				"timeZone": "GMT Standard Time",
+				"schedule": {
+					"minutes": [
+						0
+					],
+					"hours": [
+						2
+					],
+					"monthDays": [
+						22
+					]
+				}
+			}
+		}
+	}
+}
